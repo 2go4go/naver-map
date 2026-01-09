@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
-    <title>Naver Map with Floating Support</title>
+    <title>Naver Map with Segment Support</title>
     <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=0lep6flysx"></script>
     <style>
         * {
@@ -139,6 +139,9 @@
             console.log('FLOATING MODE ACTIVATED');
         }
         
+        // ⭐⭐⭐ 세그먼트 분리 설정 ⭐⭐⭐
+        const MAX_SEGMENT_DISTANCE = 150;  // 150m 이상이면 새 세그먼트로 분리
+        
         // 상태 보존
         const StateManager = {
             STORAGE_KEY: 'naverMapState',
@@ -180,6 +183,9 @@
         let endMarker = null;
         let totalDistance = 0;
         let autoStartTriggered = false;
+        
+        // ⭐⭐⭐ 여러 세그먼트를 위한 Polyline 배열 ⭐⭐⭐
+        let routePaths = [];
 
         window.NaverMapBridge = {
             userLocation: null,
@@ -236,8 +242,16 @@
                         const lastPoint = routeCoordinates[routeCoordinates.length - 1];
                         const distance = calculateDistance(lastPoint.lat(), lastPoint.lng(), lat, lng);
                         const minDistance = isFloatingMode ? 2 : 3;
-                        // ⭐ 500m까지 허용 (장거리 이동 지원)
-                        if (distance > minDistance && distance < 500) {
+                        
+                        // ⭐⭐⭐ 점프 감지: 150m 이상이면 새 세그먼트로 시작 ⭐⭐⭐
+                        if (distance > MAX_SEGMENT_DISTANCE) {
+                            console.log('⚠️ Jump detected: ' + distance.toFixed(1) + 'm - Starting new segment');
+                            // 포인트는 추가하되, 세그먼트로 분리됨
+                            routeCoordinates.push(new naver.maps.LatLng(lat, lng));
+                            updateRouteWithSegments();
+                            document.getElementById('pointCount').textContent = routeCoordinates.length;
+                            // 점프 거리는 총 거리에 합산하지 않음
+                        } else if (distance > minDistance) {
                             addRoutePoint(lat, lng);
                             totalDistance += distance;
                             document.getElementById('distance').textContent = Math.round(totalDistance);
@@ -264,19 +278,108 @@
             updateCurrentLocation: function(lat, lng) { updateCurrentMarker(lat, lng); },
             addRoutePoint: function(lat, lng) { addRoutePoint(lat, lng); },
             
+            // ⭐⭐⭐ 수정된 drawRoute - 세그먼트 자동 분리 ⭐⭐⭐
             drawRoute: function(pointsArray) {
                 if (typeof naver === 'undefined' || !naver.maps) return;
                 if (!Array.isArray(pointsArray)) {
                     try { pointsArray = JSON.parse(pointsArray); } catch (e) { return; }
                 }
+                
+                // 기존 라인 삭제
+                clearAllRoutePaths();
+                
                 routeCoordinates = [];
                 pointsArray.forEach(p => {
                     routeCoordinates.push(new naver.maps.LatLng(p.lat, p.lng));
                 });
-                updateRoute();
+                
+                // ⭐ 세그먼트로 분리해서 그리기
+                updateRouteWithSegments();
                 document.getElementById('pointCount').textContent = routeCoordinates.length;
             }
         };
+
+        // ⭐⭐⭐ 세그먼트 분리 함수 ⭐⭐⭐
+        function splitIntoSegments(coordinates, maxDistance) {
+            if (coordinates.length < 2) return [coordinates];
+            
+            var segments = [];
+            var currentSegment = [coordinates[0]];
+            
+            for (var i = 1; i < coordinates.length; i++) {
+                var prevPoint = coordinates[i - 1];
+                var currentPoint = coordinates[i];
+                
+                var distance = calculateDistance(
+                    prevPoint.lat(), prevPoint.lng(),
+                    currentPoint.lat(), currentPoint.lng()
+                );
+                
+                if (distance > maxDistance) {
+                    // 거리가 너무 멀면 현재 세그먼트 저장하고 새 세그먼트 시작
+                    if (currentSegment.length >= 2) {
+                        segments.push(currentSegment);
+                    }
+                    currentSegment = [currentPoint];
+                    console.log('📍 Segment split at point ' + i + ' (distance: ' + distance.toFixed(1) + 'm)');
+                } else {
+                    currentSegment.push(currentPoint);
+                }
+            }
+            
+            // 마지막 세그먼트 추가
+            if (currentSegment.length >= 2) {
+                segments.push(currentSegment);
+            }
+            
+            console.log('📊 Total segments: ' + segments.length);
+            return segments;
+        }
+
+        // ⭐⭐⭐ 모든 라인 삭제 ⭐⭐⭐
+        function clearAllRoutePaths() {
+            // 기존 단일 라인 삭제
+            if (routePath) {
+                routePath.setMap(null);
+                routePath = null;
+            }
+            
+            // 모든 세그먼트 라인 삭제
+            routePaths.forEach(function(path) {
+                if (path) path.setMap(null);
+            });
+            routePaths = [];
+        }
+
+        // ⭐⭐⭐ 세그먼트별로 라인 그리기 ⭐⭐⭐
+        function updateRouteWithSegments() {
+            if (typeof naver === 'undefined') return;
+            
+            // 기존 라인 모두 삭제
+            clearAllRoutePaths();
+            
+            if (routeCoordinates.length < 2) return;
+            
+            // 세그먼트로 분리
+            var segments = splitIntoSegments(routeCoordinates, MAX_SEGMENT_DISTANCE);
+            
+            // 각 세그먼트별로 Polyline 생성
+            segments.forEach(function(segment, index) {
+                if (segment.length >= 2) {
+                    var polyline = new naver.maps.Polyline({
+                        map: map,
+                        path: segment,
+                        strokeColor: '#4285F4',
+                        strokeOpacity: 0.9,
+                        strokeWeight: 6,
+                        strokeLineCap: 'round',
+                        strokeLineJoin: 'round'
+                    });
+                    routePaths.push(polyline);
+                    console.log('✅ Segment ' + index + ' drawn with ' + segment.length + ' points');
+                }
+            });
+        }
 
         function initMap() {
             if (typeof naver === 'undefined' || !naver.maps) {
@@ -313,7 +416,7 @@
             
             if (savedState) applyRestoredState(savedState);
             updateStatusDisplay();
-            console.log('Map initialized');
+            console.log('Map initialized (with segment support v2)');
         }
 
         function updateStatusDisplay() {
@@ -328,7 +431,9 @@
             if (state.routeCoordinates && state.routeCoordinates.length > 0) {
                 routeCoordinates = state.routeCoordinates.map(p => new naver.maps.LatLng(p.lat, p.lng));
                 totalDistance = state.totalDistance || 0;
-                updateRoute();
+                
+                // ⭐ 세그먼트로 분리해서 그리기
+                updateRouteWithSegments();
                 
                 if (routeCoordinates.length > 0) {
                     if (startMarker) startMarker.setMap(null);
@@ -450,7 +555,10 @@
         function addRoutePoint(lat, lng) {
             if (typeof naver === 'undefined') return;
             routeCoordinates.push(new naver.maps.LatLng(lat, lng));
-            updateRoute();
+            
+            // ⭐ 세그먼트로 분리해서 그리기
+            updateRouteWithSegments();
+            
             document.getElementById('pointCount').textContent = routeCoordinates.length;
             if (isFloatingMode || routeCoordinates.length % 5 === 0) StateManager.saveState();
         }
@@ -459,7 +567,10 @@
             routeCoordinates = [];
             isTracking = false;
             totalDistance = 0;
-            if (routePath) { routePath.setMap(null); routePath = null; }
+            
+            // ⭐ 모든 라인 삭제
+            clearAllRoutePaths();
+            
             clearMarkers();
             document.getElementById('pointCount').textContent = '0';
             document.getElementById('distance').textContent = '0';
@@ -467,21 +578,9 @@
             StateManager.clearState();
         }
 
+        // 기존 updateRoute는 세그먼트 버전으로 대체
         function updateRoute() {
-            if (typeof naver === 'undefined') return;
-            if (routePath) routePath.setMap(null);
-            
-            if (routeCoordinates.length > 1) {
-                routePath = new naver.maps.Polyline({
-                    map: map,
-                    path: routeCoordinates,
-                    strokeColor: '#4285F4',
-                    strokeOpacity: 0.9,
-                    strokeWeight: 6,
-                    strokeLineCap: 'round',
-                    strokeLineJoin: 'round'
-                });
-            }
+            updateRouteWithSegments();
         }
 
         function calculateDistance(lat1, lng1, lat2, lng2) {
@@ -524,11 +623,16 @@
                     routeCoordinates.push(point);
                     if (index > 0) {
                         const prevPoint = routeCoordinates[index - 1];
-                        totalDistance += calculateDistance(prevPoint.lat(), prevPoint.lng(), point.lat(), point.lng());
+                        const dist = calculateDistance(prevPoint.lat(), prevPoint.lng(), point.lat(), point.lng());
+                        // ⭐ 150m 이하인 경우만 거리에 합산 (점프는 제외)
+                        if (dist < MAX_SEGMENT_DISTANCE) {
+                            totalDistance += dist;
+                        }
                     }
                 });
                 
-                updateRoute();
+                // ⭐ 세그먼트로 분리해서 그리기
+                updateRouteWithSegments();
                 
                 if (routeCoordinates.length > 0) {
                     if (startMarker) startMarker.setMap(null);
@@ -545,7 +649,7 @@
             } catch (e) { console.error('Failed to restore route:', e); }
         };
 
-        // ============= ⭐⭐⭐ 단일 캡처 시스템 (타일 없음!) ⭐⭐⭐ =============
+        // ============= ⭐⭐⭐ 단일 캡처 시스템 ⭐⭐⭐ =============
         
         let captureState = {
             isCapturing: false,
@@ -553,13 +657,11 @@
             originalZoom: null
         };
 
-        // UI 숨기기
         function hideCaptureUI() {
             console.log('Hiding UI for capture...');
             var panel = document.getElementById('info-panel');
             if (panel) panel.classList.add('capture-hidden');
             
-            // ⭐ 네이버 지도 줌 컨트롤 완전히 숨기기
             var selectors = [
                 '[class*="btn_zoom"]',
                 '[class*="zoom"]', 
@@ -579,7 +681,6 @@
                 });
             });
             
-            // 지도 컨트롤 비활성화
             if (map) {
                 map.setOptions({
                     zoomControl: false,
@@ -593,7 +694,6 @@
             var panel = document.getElementById('info-panel');
             if (panel) panel.classList.remove('capture-hidden');
             
-            // ⭐ 줌 컨트롤 복원
             var selectors = [
                 '[class*="btn_zoom"]',
                 '[class*="zoom"]', 
@@ -613,7 +713,6 @@
                 });
             });
             
-            // 지도 컨트롤 다시 활성화 (플로팅 모드 아닐 때만)
             if (map && !isFloatingMode) {
                 map.setOptions({
                     zoomControl: true
@@ -621,7 +720,6 @@
             }
         }
 
-        // ⭐⭐⭐ 단일 캡처 (타일 없이 한 장!) ⭐⭐⭐
         window.NaverMapBridge.startFullRouteCapture = function(zoom) {
             if (captureState.isCapturing) {
                 console.log('Already capturing...');
@@ -638,21 +736,16 @@
             console.log('Route points:', routeCoordinates.length);
             captureState.isCapturing = true;
             
-            // 원본 상태 저장
             captureState.originalCenter = map.getCenter();
             captureState.originalZoom = map.getZoom();
             
-            // UI 숨기기
             hideCaptureUI();
             
-            // 경로 범위 계산
             var bounds = new naver.maps.LatLngBounds();
             routeCoordinates.forEach(function(coord) {
                 bounds.extend(coord);
             });
             
-            // ⭐ 경로 전체가 화면에 꽉 차게 fitBounds
-            // 여백 최소화로 경로가 크게 보이게
             map.fitBounds(bounds, {
                 top: 30,
                 right: 30,
@@ -663,9 +756,7 @@
             console.log('Map fitted to route bounds');
             console.log('Current zoom after fitBounds:', map.getZoom());
             
-            // 지도 렌더링 대기 후 캡처
             setTimeout(function() {
-                // Unity에 1x1 타일로 알림
                 var info = {
                     totalTiles: 1,
                     zoom: map.getZoom(),
@@ -676,7 +767,6 @@
                 console.log('Capture info:', JSON.stringify(info));
                 window.Unity.call('N/CAPTURE_START:' + JSON.stringify(info));
                 
-                // 바로 타일 캡처 요청 (1개뿐이므로)
                 setTimeout(function() {
                     var tileData = {
                         index: 0,
@@ -686,19 +776,14 @@
                     };
                     console.log('Requesting single capture');
                     window.Unity.call('N/CAPTURE_TILE:' + JSON.stringify(tileData));
-                }, 2000);  // 지도 타일 로딩 대기 (2초)
+                }, 2000);
                 
             }, 500);
         };
 
-        // 캡처 완료 후 호출
         window.NaverMapBridge.onTileCaptured = function(tileIndex) {
             console.log('Single tile captured!');
-            
-            // 완료 알림
             window.Unity.call('N/CAPTURE_PROGRESS:100');
-            
-            // 캡처 완료
             setTimeout(function() {
                 finishCapture();
             }, 300);
@@ -707,18 +792,14 @@
         function finishCapture() {
             console.log('========== CAPTURE COMPLETE ==========');
             
-            // 원래 상태로 복원
             if (captureState.originalCenter && captureState.originalZoom) {
                 map.setCenter(captureState.originalCenter);
                 map.setZoom(captureState.originalZoom);
             }
             
-            // UI 복원
             showCaptureUI();
-            
             captureState.isCapturing = false;
             
-            // Unity에 완료 알림
             window.Unity.call('N/CAPTURE_COMPLETE:' + JSON.stringify({
                 cols: 1,
                 rows: 1,
@@ -741,7 +822,6 @@
             }
         };
 
-        // 초기화
         window.onload = function() {
             if (typeof naver !== 'undefined' && naver.maps) {
                 initMap();
