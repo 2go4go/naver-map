@@ -180,6 +180,9 @@
         let endMarker = null;
         let totalDistance = 0;
         let autoStartTriggered = false;
+        
+        // ⭐ 세그먼트별 Polyline 배열 추가
+        let routePolylines = [];
 
         window.NaverMapBridge = {
             userLocation: null,
@@ -264,17 +267,88 @@
             updateCurrentLocation: function(lat, lng) { updateCurrentMarker(lat, lng); },
             addRoutePoint: function(lat, lng) { addRoutePoint(lat, lng); },
             
+            // ⭐ 기존 drawRoute - 단일 세그먼트로 처리
             drawRoute: function(pointsArray) {
                 if (typeof naver === 'undefined' || !naver.maps) return;
                 if (!Array.isArray(pointsArray)) {
                     try { pointsArray = JSON.parse(pointsArray); } catch (e) { return; }
                 }
+                
+                // 단일 세그먼트로 drawRouteSegments 호출
+                this.drawRouteSegments([pointsArray]);
+            },
+            
+            // ⭐⭐⭐ 새 함수: 세그먼트별로 여러 Polyline 그리기 (직선 연결 방지) ⭐⭐⭐
+            drawRouteSegments: function(segments) {
+                console.log('[NaverMap] drawRouteSegments called with ' + segments.length + ' segments');
+                
+                if (typeof naver === 'undefined' || !naver.maps) {
+                    console.error('[NaverMap] naver.maps not available');
+                    return;
+                }
+                
+                // 기존 세그먼트 Polyline 모두 제거
+                if (routePolylines && routePolylines.length > 0) {
+                    routePolylines.forEach(function(polyline) {
+                        if (polyline) polyline.setMap(null);
+                    });
+                }
+                routePolylines = [];
+                
+                // 기존 단일 라인도 제거 (하위 호환성)
+                if (routePath) {
+                    routePath.setMap(null);
+                    routePath = null;
+                }
+                
+                // routeCoordinates 초기화 (전체 포인트 저장용)
                 routeCoordinates = [];
-                pointsArray.forEach(p => {
-                    routeCoordinates.push(new naver.maps.LatLng(p.lat, p.lng));
-                });
-                updateRoute();
-                document.getElementById('pointCount').textContent = routeCoordinates.length;
+                var totalPoints = 0;
+                
+                // 각 세그먼트별로 Polyline 생성
+                for (var i = 0; i < segments.length; i++) {
+                    var segment = segments[i];
+                    
+                    if (!segment || segment.length < 2) {
+                        console.log('[NaverMap] Skipping segment ' + i + ' (too few points: ' + (segment ? segment.length : 0) + ')');
+                        continue;
+                    }
+                    
+                    // 좌표 변환
+                    var path = [];
+                    for (var j = 0; j < segment.length; j++) {
+                        var point = segment[j];
+                        if (point && (point.lat !== undefined) && (point.lng !== undefined)) {
+                            var latLng = new naver.maps.LatLng(point.lat, point.lng);
+                            path.push(latLng);
+                            routeCoordinates.push(latLng);  // 전체 포인트도 저장
+                            totalPoints++;
+                        }
+                    }
+                    
+                    if (path.length < 2) {
+                        console.log('[NaverMap] Segment ' + i + ' has less than 2 valid points, skipping');
+                        continue;
+                    }
+                    
+                    // Polyline 생성
+                    var polyline = new naver.maps.Polyline({
+                        map: map,
+                        path: path,
+                        strokeColor: '#4285F4',      // 파란색
+                        strokeOpacity: 0.9,
+                        strokeWeight: 6,
+                        strokeLineCap: 'round',
+                        strokeLineJoin: 'round'
+                    });
+                    
+                    routePolylines.push(polyline);
+                    console.log('[NaverMap] ✅ Segment ' + i + ' drawn with ' + path.length + ' points');
+                }
+                
+                // UI 업데이트
+                document.getElementById('pointCount').textContent = totalPoints;
+                console.log('[NaverMap] ✅ Total ' + routePolylines.length + ' polylines created, ' + totalPoints + ' points');
             }
         };
 
@@ -459,7 +533,18 @@
             routeCoordinates = [];
             isTracking = false;
             totalDistance = 0;
+            
+            // 기존 단일 라인 제거
             if (routePath) { routePath.setMap(null); routePath = null; }
+            
+            // ⭐ 세그먼트 Polyline들도 모두 제거
+            if (routePolylines && routePolylines.length > 0) {
+                routePolylines.forEach(function(polyline) {
+                    if (polyline) polyline.setMap(null);
+                });
+            }
+            routePolylines = [];
+            
             clearMarkers();
             document.getElementById('pointCount').textContent = '0';
             document.getElementById('distance').textContent = '0';
